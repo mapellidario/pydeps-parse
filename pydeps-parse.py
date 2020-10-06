@@ -2,7 +2,8 @@
 
 python3 pydeps-parse.py \
     -i /path/wmcore.dot \
-    -l 2
+    -l 2 \
+    -d /path/to/dmwm/WMCore
 
 '''
 
@@ -11,12 +12,13 @@ import logging
 import itertools
 import copy
 import json
+import os
 
 from functools import total_ordering
 
 import argparse
 parser = argparse.ArgumentParser()
-parser.add_argument("-i","--input-file", \
+parser.add_argument("-i","--input-dotfile", \
   help="path to input dot graphviz file", \
   type=str, \
   required=True, \
@@ -27,6 +29,10 @@ parser.add_argument("-l","--level", \
   required=False, \
   default=3
   )
+parser.add_argument("-d", "--directory", \
+    help="dmwm/WMCore directory, relative or absolute path",
+    type=str,
+    required=True)
 args = parser.parse_args()
 
 def remove_src_python(node):
@@ -45,35 +51,43 @@ def shorten(node):
     return snode
 
 def filter(lines):
-    lines_f = []
+    '''
+    exclude some directories that are not relevant for WMCore
+    '''
+    lines_filtered = []
     exclude_patterns = [
         "bson", "IPython", "markupsafe", "__main__",
         "jinja", "pymongo", "past", "zmq", "future",
         "cryptography", "OpenSSL"
     ]
     for line in lines:
-        write = True
+        keep = True
         for pattern in exclude_patterns:
             if pattern in line: 
                 logging.debug('{} {}'.format(pattern, line))
-                write = False
-        if write:
-            lines_f.append(line)
-    return lines_f
+                keep = False
+        if keep:
+            lines_filtered.append(line)
+    return lines_filtered
 
-def check(rules, schedule):
+def check_complete_schedule(rules, schedule):
     end = True
     for k, vs in rules.items():
+        if k not in schedule: 
+            end = False
         for v in vs:
             if v not in schedule:
                 end = False
     return end
 
-def schedule_append(grules_r, schedule):
-    l_sched = 0
-    while not check(grules_r, schedule):
-        l_sched = len(schedule)
-
+def schedule_append(grules_r, schedule, log=False):
+    '''
+    Loop over all the modules. 
+    if there is a module with satisfied dependencies, add it to the schedule
+    When the schedule is complete or stops to grow, exit
+    '''
+    while not check_complete_schedule(grules_r, schedule):
+        len_schedule = len(schedule)
         for k, vs in grules_r.items():
             satis = True
             for v in vs:
@@ -82,16 +96,18 @@ def schedule_append(grules_r, schedule):
             if satis: 
                 if k not in schedule:
                     schedule.append(k)
-
-        if l_sched == len(schedule):
+        if len_schedule == len(schedule):
             break
     return schedule
 
 def schedule_append_reflective(grules_r, schedule):
-    l_sched = 0
-    while not check(grules_r, schedule):
-        l_sched = len(schedule)
-
+    '''
+    Loop over all the modules. 
+    if there is a module with unsatisfied dependencies, but the only
+    missing dependency is itself, then add it to the schedule
+    '''
+    while not check_complete_schedule(grules_r, schedule):
+        len_schedule = len(schedule)
         for k, vs in grules_r.items():
             miss = []
             for v in vs:
@@ -100,17 +116,16 @@ def schedule_append_reflective(grules_r, schedule):
             if len(miss) == 1:
                 if miss[0] == k:
                     schedule.append(k)
-
-        if l_sched == len(schedule):
+        if len_schedule == len(schedule):
             break
     return schedule
 
-def set_default(obj):
-    if isinstance(obj, set):
-        return list(obj)
-    raise TypeError
+# def set_default(obj):
+#     if isinstance(obj, set):
+#         return list(obj)
+#     raise TypeError
 
-# @total_ordering
+@total_ordering
 class WMCoreNode():
     '''
     high prio: required high, requires low
@@ -118,12 +133,18 @@ class WMCoreNode():
 
     __lt__: less-than === higher prio
     '''
-    def __init__(self, name, grules_r, schedule):
+    def __init__(self, name, grules_r, schedule, wmcore_dir):
         self.name = name
-        self.required = self.required_by(grules_r, schedule, name)
-        self.requires = self.requirements(grules_r, schedule, name)
-        self.required_card = len(set(self.required))
-        self.requires_card = len(set(self.requires))
+        # graph
+        self._required = self.required_by(grules_r, schedule, name)
+        self._requires = self.requirements(grules_r, schedule, name)
+        self.required_card = len(set(self._required))
+        self.requires_card = len(set(self._requires))
+        # stats
+        self._wmcore_dir = os.path.join(wmcore_dir, "src", "python")
+        self._module_dir = os.path.join(self._wmcore_dir, "/".join(name.split("_")))
+        self.len = self._len()
+        self.lines = self._lines()
 
     def required_by(self, grules_r, schedule, key):
         '''
@@ -154,22 +175,38 @@ class WMCoreNode():
     def __eq__(self, other):
         return (self.required_card == other.required_card) and (self.requires_card == other.requires_card)
 
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    def _len(self):
+        if os.path.exists(self._module_dir + ".py"):
+            return 1
+        else:
+            mylist = [name for root, _, names in os.walk(self._module_dir) for name in names if (os.path.isfile(os.path.join(root, name)) and name.endswith(".py") and name != "__init__.py") ]
+            # print(mylist)
+            return len(mylist)
 
-    txt = open(args.input_file).read()
+    def __len__(self): return self.len
 
-    lines = txt.split("\n")
-    header = lines[:6]
-    body = lines[6:-3]
+    def _lines(self):
+        filelist = []
+        fileloc = []
+        if os.path.exists(self._module_dir + ".py"):
+            filelist.append(self._module_dir + ".py")
+            fileloc.append( sum(1 for line in open(self._module_dir + ".py")) )
+        else:
+            filelist = [os.path.join(root,name) for root, _, names in os.walk(self._module_dir) for name in names if (os.path.isfile(os.path.join(root, name)) and name.endswith(".py") and name != "__init__.py") ]
+            fileloc = [sum(1 for line in open( file )) for file in filelist]
+        return sum(fileloc)
 
-    body = filter(body)
+def dependency_dict(rules):
+    '''
+    Build 
+    * dictionary with the reversed dependencies, i.e. key depends on val
+    * dictionary with the reversed dependencies, grouped at the desired level
 
-    rules = [line for line in body if '->' in line]
+    '''
     rules_r = {} # reversed dependencies
     grules_r = {} # grouped reversed dependencies
     for rule in rules:
-        arrow, fmt = rule.split("[")
+        arrow, _ = rule.split("[")
         a, _, b = arrow.split()
         a, b = remove_src_python(a), remove_src_python(b)
         # fill reverse dep
@@ -190,17 +227,26 @@ if __name__ == "__main__":
         else:
             grules_r[group_b] = set()
             grules_r[group_b].add(group_a)
+    return rules_r, grules_r
 
-    # print the simplified diagram dictionary - json format
-    with open(args.input_file[:-4] + "_group_l" + str(args.level) + ".txt", "w+") as f:
-        pprint.pprint(grules_r, f)
+def depgraph_write_json(revdep_dict, filename):
+    '''
+    write to file the reversed dependency dictionary in json format.
+    
+    json.dumps(revdep_dict, f) # fais with set() is not JSON serializable
 
-    # convert set() into list before serializing
-    # with open(args.input_file[:-4] + "_group_l" + str(args.level) + ".json", "w+") as f:
-    #     json.dumps(grules_r, f, default=set_default)
+    Need to filter out empty set before serializing to json in the proper way.
+    Try: default=set_default
+    '''
+    with open(filename, "w+") as f:
+        # json.dumps(revdep_dict, f, default=set_default)
+        pprint.pprint(revdep_dict, f)
 
-    # print the simplified diagram dot file
-    with open(args.input_file[:-4] + "_group_l" + str(args.level) + ".dot", "w+") as f:
+def depgraph_write_dot(revdep_dict, filename):
+    '''
+    Write simplified reversed dependency graph to dot file
+    '''
+    with open(filename, "w+") as f:
         f.write('\n'.join(header))
         print('\n', file=f)
         # nodes
@@ -217,109 +263,110 @@ if __name__ == "__main__":
                 print('    {} -> {}'.format(node, k), file=f)
         print('}', file=f)
 
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+
+    txt = open(args.input_dotfile).read()
+    lines = txt.split("\n")
+    header = lines[:6]
+    body = lines[6:-3]
+    body = filter(body)
+
+    ################################
+    # Get simplified dependency graph
+    rules = [line for line in body if '->' in line]
+    rules_r, grules_r = dependency_dict(rules)
+    depgraph_write_json(
+        grules_r,
+        args.input_dotfile[:-4] + "_group_l" + str(args.level) + ".txt", 
+        )
+    depgraph_write_dot(
+        grules_r,
+        args.input_dotfile[:-4] + "_group_l" + str(args.level) + ".dot"
+    )
+
+    ################################
+    # Compute a possible schedule for gradual migration
+    # based on the simplified graph
+
+    logging.info("Number of directories/modules: %s" % len(grules_r))
+
     schedule = []
-    logging.info(len(grules_r))
     # adding the directories with no dependencies
     for k, vs in grules_r.items():
         if len(vs) == 0:
             if k not in schedule:
                 schedule.append(k)
-    # adding the directories whose dependencies are satisfied
+    # adding the directories whose dependencies are easily satisfied
     schedule = schedule_append(grules_r, schedule)
     schedule = schedule_append_reflective(grules_r, schedule)
 
-    pprint.pprint(schedule)
+    # pprint.pprint(schedule)
+    logging.info("len schedule: %s" % len(schedule))
 
+    # Manually select a few modules that in the dependency diagram 
+    # present a lot of outgoing arrows, which means that they are required by
+    # many other modules.
+    # these are intended to be migrated all at once at the same time!
+
+    euristic_schedule = [
+        "WMCore_Database",
+        "WMCore_Services",
+        "WMCore_WorkerThreads",
+        "WMCore_WMSpec",
+    ]
+    for k in euristic_schedule:
+        if k not in schedule:
+            schedule.append(k) # 33
+    schedule = schedule_append(grules_r, schedule) # len(schedule) 38
+    schedule = schedule_append_reflective(grules_r, schedule) # len(schedule) 63
+    schedule = schedule_append(grules_r, schedule) # len(schedule) 69
+    schedule = schedule_append_reflective(grules_r, schedule) # len(schedule) 82
+    schedule = schedule_append(grules_r, schedule) # len(schedule) 83
+
+    logging.info("len schedule: %s" % len(schedule))
+    logging.info(schedule)
+
+    # # cyclic dependencies - brute forcing
+    # # no longer necessary after the euristic schedule 
+    # left_nodes = (set(grules_r.keys())).difference(set(schedule))
+    # logging.info("left nodes: %s" % len(left_nodes))
+    # for n in range(10, len(left_nodes)):
+    #     kcombs = itertools.combinations( left_nodes , n)
+    #     logging.info("n %s" % n)
+    #     # logging.info("%s", len(list(kcombs)))
+    #     for kcomb in kcombs:
+    #         schedule_try = set(schedule) | set(kcomb) # set.union
+    #         satis = True
+    #         for k in kcomb:
+    #             for v in grules_r[k]:
+    #                 if v not in schedule_try:
+    #                     satis = False
+    #         if satis: logging.info(kcomb)
+
+    ################################
+    # After having a schedule, gather some informations about the modules
     node_list = []
     for k in grules_r:
-        node = WMCoreNode(k, grules_r, schedule)
+        if args.level > 1: 
+            if "_" not in k: 
+                continue # Exclude directories in root to avoid double counting
+        node = WMCoreNode(k, grules_r, schedule, args.directory)
         node_list.append(node)
     node_list = sorted(node_list)
     for idx, node in enumerate(node_list):
-        logging.info("%s %s %s", node.name, node.required_card, node.requires_card)
+        logging.debug("%s %s %s - %s %s", node.name, node.required_card, node.requires_card, len(node), node.lines)
+        ## this print is needed to check if the sum is correct
+        ## python3 pydeps-parse.py \
+        ##     -i /home/dario/docs/dmwm/docs/wmcore/deps-tree/wmcore_gznzsw1eblR.dot \
+        ##     -l 2 \
+        ##     -d /home/dario/docs/dmwm/github.com/WMCore | grep "_" | awk -F" " '{sum+=$5} END {print sum}'
+        ## INFO:root:83
+        ## 138235
+        ## print(node.name, node.required_card, node.requires_card, len(node), node.lines)
 
-    # euristic_schedule = [
-    #     "WMCore_Database",
-    #     "WMCore_DAOFactory",
-    #     "WMCore_Services",
-    #     "WMCore_WorkerThreads",
-    #     "WMCore_WMSpec",
+    print("Total .py files:", sum([ len(node) for node in node_list ]) )
 
-    # ]
-
-    # logging.info(len(schedule))
-
-    # for k in euristic_schedule:
-    #     for v in list(deps_list(grules_r, schedule, k)):
-    #         if v not in schedule:
-    #             schedule.append(v)
-
-    # logging.info(len(schedule))
-
-    # cyclic dependencies - now we try to brute-force the result
-    # this can and should be improved
-    left_nodes = (set(grules_r.keys())).difference(set(schedule))
-    logging.info("left nodes: %s" % len(left_nodes))
-    for n in range(10, len(left_nodes)):
-        kcombs = itertools.combinations( left_nodes , n)
-        logging.info("n %s" % n)
-        # logging.info("%s", len(list(kcombs)))
-        for kcomb in kcombs:
-            schedule_try = set(schedule) | set(kcomb) # set.union
-            satis = True
-            for k in kcomb:
-                for v in grules_r[k]:
-                    if v not in schedule_try:
-                        satis = False
-            if satis: logging.info(kcomb)
-
-## docker run -it python:3.8 python
-# from math import comb
-# def comblist(n):
-#   for i in range(n):
-#     print(i, comb(n,i))
-
-# comblist(39)
-
-# 0 1
-# 1 39
-# 2 741
-# 3 9139
-# 4 82251
-# 5 575757
-# 6 3262623
-# 7 15380937
-# 8 61523748
-# 9 211915132
-# 10 635745396
-# 11 1676056044
-# 12 3910797436
-# 13 8122425444
-# 14 15084504396
-# 15 25140840660
-# 16 37711260990
-# 17 51021117810
-# 18 62359143990
-# 19 68923264410
-# 20 68923264410
-# 21 62359143990
-# 22 51021117810
-# 23 37711260990
-# 24 25140840660
-# 25 15084504396
-# 26 8122425444
-# 27 3910797436
-# 28 1676056044
-# 29 635745396
-# 30 211915132
-# 31 61523748
-# 32 15380937
-# 33 3262623
-# 34 575757
-# 35 82251
-# 36 9139
-# 37 741
-# 38 39
-
-# 10
-# ('WMComponent_RetryManager', 'WMComponent_JobStatusLite', 'WMComponent_JobArchiver', 'WMQuality_TestInitCouchApp', 'WMComponent_PhEDExInjector', 'WMCore_WMInit', 'WMQuality_TestInit', 'WMCore_WMConnectionBase', 'WMCore_BossAir', 'WMCore_JobStateMachine')
+    ## cd dmwm/WMCore/src/python
+    ## find . | grep -v ".pyc" | grep ".py" | grep -v "__init__.py" | xargs -n 1 cat | wc -l
+    print("Total LOC in .py files", sum([ node.lines for node in node_list ]) )
