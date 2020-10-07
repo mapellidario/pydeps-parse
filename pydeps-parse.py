@@ -43,8 +43,18 @@ def remove_src_python(node):
 
 def shorten(node):
     '''
-    keep only u to the level-nth level
+    keep only up to the level-nth level.
+    
+    An exception to this rule are the nodes whose name start with an element
+    of mask, i.e. the files in the directories specified by masks. 
+    In this case the nodes are grouped at the level specified by the mask
+    no matter what `args.level` is
     '''
+    masks = ["Utils", "PSetTweaks"]
+    for mask in masks:
+        if node.startswith(mask + "_"):
+            logging.debug(node)
+            return mask
     level = args.level
     levels = [i for i in range(len(node)) if node[i] == "_"] # list of index of "_" char
     snode = node[:levels[level-1]] if level <= len(levels) else node
@@ -58,7 +68,7 @@ def filter(lines):
     exclude_patterns = [
         "bson", "IPython", "markupsafe", "__main__",
         "jinja", "pymongo", "past", "zmq", "future",
-        "cryptography", "OpenSSL"
+        "cryptography", "OpenSSL", "ipykernel_embed"
     ]
     for line in lines:
         keep = True
@@ -128,16 +138,41 @@ def schedule_append_reflective(grules_r, schedule):
 @total_ordering
 class WMCoreNode():
     '''
-    high prio: required high, requires low
-    low prio: required low, requires high
+    This class has a concept of ordering that would allow a list of nodes/modules
+    to be sorted from high priorityof migration to low priority.
+    The priority is estimated from two scores
+    1. how many other modules import the current module: `required_card`.
+    2. how many other modules need to be migrated before migrating this
+      module : `required_card`
 
-    __lt__: less-than === higher prio
+    A module with 
+    * high prio: high `required_card`, low `requires_card`
+    * low prio: low `required_card`, high `requires_card`
+
+    The function __lt__: less-than means higher priority
+
+    Example on how to sort such modules
+    ```python
+    node_list = []
+    for k in grules_r:
+        node = WMCoreNode(k, grules_r, schedule, args.directory)
+        node_list.append(node)
+    node_list = sorted(node_list)
+
+    This class has a concept of length, which is the number of files .py in 
+    the directory `self.name`.
+    ```
     '''
-    def __init__(self, name, grules_r, schedule, wmcore_dir):
+    def __init__(self):
+        self.name = ""
+        self.len = 0
+        self.lines = 0
+
+    def init(self, name, grules_r, schedule, wmcore_dir):
         self.name = name
         # graph
-        self._required = self.required_by(grules_r, schedule, name)
-        self._requires = self.requirements(grules_r, schedule, name)
+        self._required = self._required_by(grules_r, schedule, name)
+        self._requires = self._requirements(grules_r, schedule, name)
         self.required_card = len(set(self._required))
         self.requires_card = len(set(self._requires))
         # stats
@@ -146,7 +181,7 @@ class WMCoreNode():
         self.len = self._len()
         self.lines = self._lines()
 
-    def required_by(self, grules_r, schedule, key):
+    def _required_by(self, grules_r, schedule, key):
         '''
         modules **that are not in schedule yet**
         depend on this (higher, higher prio)
@@ -155,16 +190,16 @@ class WMCoreNode():
             if key in vs and k not in schedule:
                 yield k
 
-    def requirements(self, grules_r, schedule, key):
+    def _requirements(self, grules_r, schedule, key):
         '''
         list of modules **that are not in schedule yet**
         that need to be migrated before migrating this.
-        len(set(requirements(...))): (higher, lower prio)
+        len(set(_requirements(...))): (higher, lower prio)
         '''
         for v in grules_r[key]:
             if v not in schedule:
                 yield v
-            self.requirements(grules_r, schedule, v)
+            self._requirements(grules_r, schedule, v)
 
     def __lt__ (self, other):
         if self.required_card > other.required_card: return True
@@ -176,8 +211,11 @@ class WMCoreNode():
         return (self.required_card == other.required_card) and (self.requires_card == other.requires_card)
 
     def _len(self):
+        '''
+        number of .py files in the directory of the module
+        '''
         if os.path.exists(self._module_dir + ".py"):
-            return 1
+            return 0
         else:
             mylist = [name for root, _, names in os.walk(self._module_dir) for name in names if (os.path.isfile(os.path.join(root, name)) and name.endswith(".py") and name != "__init__.py") ]
             # print(mylist)
@@ -186,6 +224,10 @@ class WMCoreNode():
     def __len__(self): return self.len
 
     def _lines(self):
+        '''
+        Total number of lines of code in all the files in the directory of the
+        module `self.name`
+        '''
         filelist = []
         fileloc = []
         if os.path.exists(self._module_dir + ".py"):
@@ -196,7 +238,21 @@ class WMCoreNode():
             fileloc = [sum(1 for line in open( file )) for file in filelist]
         return sum(fileloc)
 
-def dependency_dict(rules):
+    def __add__(self, other):
+        temp = WMCoreNode()
+        temp.len = 0
+        temp.name = self.name
+        if self.len == 0: temp.len += 1
+        else: temp.len += self.len
+        if other.len == 0: temp.len += 1
+        else: temp.len += other.len
+        temp.lines = self.lines + other.lines
+        return temp
+
+    def __repr__(self):
+        return "{0} {1} {2}".format( self.name, self.len, self.lines)
+
+def dependency_dict(rules, nodes):
     '''
     Build 
     * dictionary with the reversed dependencies, i.e. key depends on val (`key.py` has line `import val`)
@@ -209,6 +265,10 @@ def dependency_dict(rules):
         arrow, _ = rule.split("[")
         a, _, b = arrow.split()
         a, b = remove_src_python(a), remove_src_python(b)
+        # # Exclude directories in root to avoid double counting
+        # if args.level > 1: 
+        #     if ("_" not in a) or ("_" not in b) : 
+        #         continue 
         # fill reverse dep
         if a not in rules_r:
             rules_r[a] = set()
@@ -227,6 +287,16 @@ def dependency_dict(rules):
         else:
             grules_r[group_b] = set()
             grules_r[group_b].add(group_a)
+    for node in nodes:
+        nodename = node.split("[")[0]
+        nodename.strip()
+        nodename = remove_src_python(nodename)
+        group_nodename = shorten(nodename)
+        if group_nodename not in rules_r:
+            rules_r [group_nodename] = set()
+        if group_nodename not in grules_r:
+            grules_r [group_nodename] = set()
+            logging.info(group_nodename)
     return rules_r, grules_r
 
 def depgraph_write_json(revdep_dict, filename):
@@ -275,9 +345,10 @@ if __name__ == "__main__":
 
     ################################
     # Get simplified dependency graph
+    nodes = [line for line in body if 'label' in line]
     rules = [line for line in body if '->' in line]
     logging.debug(rules)
-    rules_r, grules_r = dependency_dict(rules)
+    rules_r, grules_r = dependency_dict(rules, nodes)
     logging.debug(rules_r)
     logging.debug(grules_r)
     depgraph_write_json(
@@ -330,32 +401,60 @@ if __name__ == "__main__":
     schedule = schedule_append(grules_r, schedule) # len(schedule) 83
 
     logging.info("len schedule: %s" % len(schedule))
-    logging.info(schedule)
+    logging.debug(schedule)
 
     ################################
     # After having a schedule, gather some informations about the modules
     if args.directory:
-        node_list = []
+        node_dict = {}
         for k in grules_r:
-            if args.level > 1: 
-                if "_" not in k: 
-                    continue # Exclude directories in root to avoid double counting
-            node = WMCoreNode(k, grules_r, schedule, args.directory)
-            node_list.append(node)
-        node_list = sorted(node_list)
-        for idx, node in enumerate(node_list):
-            logging.debug("%s %s %s - %s %s", node.name, node.required_card, node.requires_card, len(node), node.lines)
-            ## this print is needed to check if the sum is correct
-            ## python3 pydeps-parse.py \
-            ##     -i /home/dario/docs/dmwm/docs/wmcore/deps-tree/wmcore_gznzsw1eblR.dot \
-            ##     -l 2 \
-            ##     -d /home/dario/docs/dmwm/github.com/WMCore | grep "_" | awk -F" " '{sum+=$5} END {print sum}'
-            ## INFO:root:83
-            ## 138235
-            ## print(node.name, node.required_card, node.requires_card, len(node), node.lines)
+            node = WMCoreNode()
+            node.init(k, grules_r, schedule, args.directory)
+            node_dict[node.name] = node
 
-        print("Total .py files:", sum([ len(node) for node in node_list ]) )
-
+        total_number_files = sum([ len(node) for node in node_dict.values() ])
+        total_number_loc = sum([ node.lines for node in node_dict.values() ])
+        current_loc = 0
+        for idx, name in enumerate(schedule):
+            current_loc += node_dict[name].lines
+            logging.info("| {0: <34} | {1: >4} | {2: >6} | {3: >1.3f} |".format(
+                name, 
+                len(node_dict[name]), 
+                node_dict[name].lines,
+                current_loc / total_number_loc
+                ))
+    
+        logging.info("Total .py files: %s" % total_number_files )
+        ## compare total_number_loc with the following
         ## cd dmwm/WMCore/src/python
         ## find . | grep -v ".pyc" | grep ".py" | grep -v "__init__.py" | xargs -n 1 cat | wc -l
-        print("Total LOC in .py files", sum([ node.lines for node in node_list ]) )
+        logging.info("Total LOC in .py files: %s" % total_number_loc )
+
+        # test_sum = node_dict["Utils_MemoryCache"] + node_dict["Utils_Utilities"]
+        # logging.info("| {0: <34} | {1: >3} | {2: >5} |".format(
+        #         test_sum.name, 
+        #         len(test_sum), 
+        #         test_sum.lines,
+        #         ))
+        # masks = ["Utils"]
+        # for mask in masks:
+        #     temp_mask = WMCoreNode()
+        #     temp_mask.name = mask
+        #     logging.debug(temp_mask)
+        #     pop_cache = []
+        #     for name, node in node_dict.items():
+        #         if name.startswith(mask + "_"):
+        #             temp_mask += node
+        #             logging.debug(name)
+        #             logging.debug(temp_mask)
+        #             pop_cache.append(name)
+        #     for name in pop_cache:
+        #         node_dict.pop(name)
+        #     node_dict[mask] = temp_mask
+        #     logging.debug(temp_mask)
+        # for node in node_dict.values():
+        #     logging.info("| {0: <34} | {1: >3} | {2: >5} |".format(
+        #         node.name, 
+        #         len(node), 
+        #         node.lines,
+        #         ))

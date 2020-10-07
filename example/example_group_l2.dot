@@ -6,8 +6,8 @@ digraph G {
 
 
     WMCore_A [label="WMCore_A"]
-    WMCore_C [label="WMCore_C"]
     WMCore_B [label="WMCore_B"]
+    WMCore_C [label="WMCore_C"]
     WMCore_C -> WMCore_A
     WMCore_A -> WMCore_B
     WMCore_A -> WMCore_C
