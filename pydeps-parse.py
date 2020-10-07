@@ -35,6 +35,8 @@ parser.add_argument("-d", "--directory", \
     required=False)
 args = parser.parse_args()
 
+masks = ["Utils", "PSetTweaks"]
+
 def remove_src_python(node):
     node = node.strip() # remove trailing spaces
     if node.startswith("src_python_"):
@@ -50,7 +52,6 @@ def shorten(node):
     In this case the nodes are grouped at the level specified by the mask
     no matter what `args.level` is
     '''
-    masks = ["Utils", "PSetTweaks"]
     for mask in masks:
         if node.startswith(mask + "_"):
             logging.debug(node)
@@ -178,6 +179,7 @@ class WMCoreNode():
         # stats
         self._wmcore_dir = os.path.join(wmcore_dir, "src", "python")
         self._module_dir = os.path.join(self._wmcore_dir, "/".join(name.split("_")))
+        self._get_files()
         self.len = self._len()
         self.lines = self._lines()
 
@@ -210,16 +212,32 @@ class WMCoreNode():
     def __eq__(self, other):
         return (self.required_card == other.required_card) and (self.requires_card == other.requires_card)
 
+    def _get_files(self):
+        self._files = []
+        if os.path.exists(self._module_dir + ".py"):
+            self._files = [self._module_dir + ".py"]
+        elif (self.name in masks) or (self.name.count("_") == args.level - 1):
+            self._files = [os.path.join(root, name) 
+                            for root, _, names in os.walk(self._module_dir) 
+                            for name in names 
+                            if os.path.isfile(os.path.join(root, name)) 
+                            and name.endswith(".py") 
+                            and name != "__init__.py" ] # 
+        elif self.name.count("_") < args.level - 1 :
+            self._files = [os.path.join(root, name) 
+                           for root, _, names in os.walk(self._module_dir) 
+                           for name in names 
+                           if os.path.isfile(os.path.join(root, name)) 
+                           and name.endswith(".py") 
+                           and name != "__init__.py" 
+                           and name.count("_") >= args.level ] # 
+
+
     def _len(self):
         '''
         number of .py files in the directory of the module
         '''
-        if os.path.exists(self._module_dir + ".py"):
-            return 0
-        else:
-            mylist = [name for root, _, names in os.walk(self._module_dir) for name in names if (os.path.isfile(os.path.join(root, name)) and name.endswith(".py") and name != "__init__.py") ]
-            # print(mylist)
-            return len(mylist)
+        return len(self._files)
 
     def __len__(self): return self.len
 
@@ -228,15 +246,7 @@ class WMCoreNode():
         Total number of lines of code in all the files in the directory of the
         module `self.name`
         '''
-        filelist = []
-        fileloc = []
-        if os.path.exists(self._module_dir + ".py"):
-            filelist.append(self._module_dir + ".py")
-            fileloc.append( sum(1 for line in open(self._module_dir + ".py")) )
-        else:
-            filelist = [os.path.join(root,name) for root, _, names in os.walk(self._module_dir) for name in names if (os.path.isfile(os.path.join(root, name)) and name.endswith(".py") and name != "__init__.py") ]
-            fileloc = [sum(1 for line in open( file )) for file in filelist]
-        return sum(fileloc)
+        return sum( [sum(1 for line in open( file )) for file in self._files] )
 
     def __add__(self, other):
         temp = WMCoreNode()
@@ -265,10 +275,10 @@ def dependency_dict(rules, nodes):
         arrow, _ = rule.split("[")
         a, _, b = arrow.split()
         a, b = remove_src_python(a), remove_src_python(b)
-        # # Exclude directories in root to avoid double counting
-        # if args.level > 1: 
-        #     if ("_" not in a) or ("_" not in b) : 
-        #         continue 
+        # Exclude directories in root to avoid double counting
+        if (a not in masks) and (b not in masks) and args.level > 1: 
+            if ("_" not in a) or ("_" not in b) : 
+                continue 
         # fill reverse dep
         if a not in rules_r:
             rules_r[a] = set()
@@ -385,15 +395,16 @@ if __name__ == "__main__":
     # many other modules.
     # these are intended to be migrated all at once at the same time!
 
-    euristic_schedule = [
-        "WMCore_Database",
-        "WMCore_Services",
-        "WMCore_WorkerThreads",
-        "WMCore_WMSpec",
-    ]
-    for k in euristic_schedule:
-        if k not in schedule:
-            schedule.append(k) # 33
+    if args.level == 2:
+        euristic_schedule = [
+            "WMCore_Database",
+            "WMCore_Services",
+            "WMCore_WorkerThreads",
+            "WMCore_WMSpec",
+        ]
+        for k in euristic_schedule:
+            if k not in schedule:
+                schedule.append(k) # 33
     schedule = schedule_append(grules_r, schedule) # len(schedule) 38
     schedule = schedule_append_reflective(grules_r, schedule) # len(schedule) 63
     schedule = schedule_append(grules_r, schedule) # len(schedule) 69
@@ -402,6 +413,7 @@ if __name__ == "__main__":
 
     logging.info("len schedule: %s" % len(schedule))
     logging.debug(schedule)
+    logging.debug(set(grules_r.keys()).difference(set(schedule)))
 
     ################################
     # After having a schedule, gather some informations about the modules
