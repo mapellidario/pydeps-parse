@@ -32,7 +32,7 @@ parser.add_argument("-l","--level", \
 parser.add_argument("-d", "--directory", \
     help="dmwm/WMCore directory, relative or absolute path",
     type=str,
-    required=True)
+    required=False)
 args = parser.parse_args()
 
 def remove_src_python(node):
@@ -242,7 +242,7 @@ def depgraph_write_json(revdep_dict, filename):
         # json.dumps(revdep_dict, f, default=set_default)
         pprint.pprint(revdep_dict, f)
 
-def depgraph_write_dot(revdep_dict, filename):
+def depgraph_write_dot(revdep_dict, filename, header):
     '''
     Write simplified reversed dependency graph to dot file
     '''
@@ -265,24 +265,29 @@ def depgraph_write_dot(revdep_dict, filename):
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
+    # logging.basicConfig(level=logging.DEBUG)
 
     txt = open(args.input_dotfile).read()
     lines = txt.split("\n")
     header = lines[:6]
-    body = lines[6:-3]
+    body = lines[6:-1]
     body = filter(body)
 
     ################################
     # Get simplified dependency graph
     rules = [line for line in body if '->' in line]
+    logging.debug(rules)
     rules_r, grules_r = dependency_dict(rules)
+    logging.debug(rules_r)
+    logging.debug(grules_r)
     depgraph_write_json(
         grules_r,
         args.input_dotfile[:-4] + "_group_l" + str(args.level) + ".txt", 
         )
     depgraph_write_dot(
         grules_r,
-        args.input_dotfile[:-4] + "_group_l" + str(args.level) + ".dot"
+        args.input_dotfile[:-4] + "_group_l" + str(args.level) + ".dot",
+        header
     )
 
     ################################
@@ -327,46 +332,30 @@ if __name__ == "__main__":
     logging.info("len schedule: %s" % len(schedule))
     logging.info(schedule)
 
-    # # cyclic dependencies - brute forcing
-    # # no longer necessary after the euristic schedule 
-    # left_nodes = (set(grules_r.keys())).difference(set(schedule))
-    # logging.info("left nodes: %s" % len(left_nodes))
-    # for n in range(10, len(left_nodes)):
-    #     kcombs = itertools.combinations( left_nodes , n)
-    #     logging.info("n %s" % n)
-    #     # logging.info("%s", len(list(kcombs)))
-    #     for kcomb in kcombs:
-    #         schedule_try = set(schedule) | set(kcomb) # set.union
-    #         satis = True
-    #         for k in kcomb:
-    #             for v in grules_r[k]:
-    #                 if v not in schedule_try:
-    #                     satis = False
-    #         if satis: logging.info(kcomb)
-
     ################################
     # After having a schedule, gather some informations about the modules
-    node_list = []
-    for k in grules_r:
-        if args.level > 1: 
-            if "_" not in k: 
-                continue # Exclude directories in root to avoid double counting
-        node = WMCoreNode(k, grules_r, schedule, args.directory)
-        node_list.append(node)
-    node_list = sorted(node_list)
-    for idx, node in enumerate(node_list):
-        logging.debug("%s %s %s - %s %s", node.name, node.required_card, node.requires_card, len(node), node.lines)
-        ## this print is needed to check if the sum is correct
-        ## python3 pydeps-parse.py \
-        ##     -i /home/dario/docs/dmwm/docs/wmcore/deps-tree/wmcore_gznzsw1eblR.dot \
-        ##     -l 2 \
-        ##     -d /home/dario/docs/dmwm/github.com/WMCore | grep "_" | awk -F" " '{sum+=$5} END {print sum}'
-        ## INFO:root:83
-        ## 138235
-        ## print(node.name, node.required_card, node.requires_card, len(node), node.lines)
+    if args.directory:
+        node_list = []
+        for k in grules_r:
+            if args.level > 1: 
+                if "_" not in k: 
+                    continue # Exclude directories in root to avoid double counting
+            node = WMCoreNode(k, grules_r, schedule, args.directory)
+            node_list.append(node)
+        node_list = sorted(node_list)
+        for idx, node in enumerate(node_list):
+            logging.debug("%s %s %s - %s %s", node.name, node.required_card, node.requires_card, len(node), node.lines)
+            ## this print is needed to check if the sum is correct
+            ## python3 pydeps-parse.py \
+            ##     -i /home/dario/docs/dmwm/docs/wmcore/deps-tree/wmcore_gznzsw1eblR.dot \
+            ##     -l 2 \
+            ##     -d /home/dario/docs/dmwm/github.com/WMCore | grep "_" | awk -F" " '{sum+=$5} END {print sum}'
+            ## INFO:root:83
+            ## 138235
+            ## print(node.name, node.required_card, node.requires_card, len(node), node.lines)
 
-    print("Total .py files:", sum([ len(node) for node in node_list ]) )
+        print("Total .py files:", sum([ len(node) for node in node_list ]) )
 
-    ## cd dmwm/WMCore/src/python
-    ## find . | grep -v ".pyc" | grep ".py" | grep -v "__init__.py" | xargs -n 1 cat | wc -l
-    print("Total LOC in .py files", sum([ node.lines for node in node_list ]) )
+        ## cd dmwm/WMCore/src/python
+        ## find . | grep -v ".pyc" | grep ".py" | grep -v "__init__.py" | xargs -n 1 cat | wc -l
+        print("Total LOC in .py files", sum([ node.lines for node in node_list ]) )
