@@ -1,0 +1,3 @@
+{'WMCore_A': {'WMCore_C'},
+ 'WMCore_B': {'WMCore_A'},
+ 'WMCore_C': {'WMCore_A', 'WMCore_B'}}

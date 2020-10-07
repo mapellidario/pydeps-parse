@@ -199,7 +199,7 @@ class WMCoreNode():
 def dependency_dict(rules):
     '''
     Build 
-    * dictionary with the reversed dependencies, i.e. key depends on val
+    * dictionary with the reversed dependencies, i.e. key depends on val (`key.py` has line `import val`)
     * dictionary with the reversed dependencies, grouped at the desired level
 
     '''

@@ -1,0 +1,15 @@
+digraph G {
+  concentrate = true;
+
+  rankdir = TB;
+  node [style=filled,fillcolor="#ffffff",fontcolor="#000000",fontname=Helvetica,fontsize=10];
+
+
+    WMCore_A [label="WMCore_A"]
+    WMCore_C [label="WMCore_C"]
+    WMCore_B [label="WMCore_B"]
+    WMCore_C -> WMCore_A
+    WMCore_A -> WMCore_B
+    WMCore_A -> WMCore_C
+    WMCore_B -> WMCore_C
+}
