@@ -29,7 +29,9 @@ digraph G {
 Some characteristics are hardcoded in the script. If you use a different 
 structure the script may break)
 
-The image produced from this dot file is ![](./example/example.png)
+The image produced from this dot file is 
+
+![](./example/example.png)
 
 We want to simplify this graph grouping at the second level, i.e.
 have only nodes of of the form `WMCore_X` and nothing deeper.
