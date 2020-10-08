@@ -1,6 +1,6 @@
 # pydeps-parse
 
-Scripts to parse, edit and draw simplified versions of dependency diagrams obtained with [pydeps](https://github.com/thebjorn/pydeps)
+Scripts to parse, edit and draw simplified versions of dependency diagrams obtained with [pydeps](https://github.com/thebjorn/pydeps), based on suggestion provided by the maintainer in [this issue](https://github.com/thebjorn/pydeps/issues/40)
 
 ### Example
 
