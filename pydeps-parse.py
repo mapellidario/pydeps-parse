@@ -96,15 +96,15 @@ def check_complete_schedule(rules, schedule):
                 end = False
     return end
 
-def schedule_append(grules_r, schedule, log=False):
+def schedule_append(rules_rev_group, schedule, log=False):
     '''
     Loop over all the modules. 
     if there is a module with satisfied dependencies, add it to the schedule
     When the schedule is complete or stops to grow, exit
     '''
-    while not check_complete_schedule(grules_r, schedule):
+    while not check_complete_schedule(rules_rev_group, schedule):
         len_schedule = len(schedule)
-        for k, vs in grules_r.items():
+        for k, vs in rules_rev_group.items():
             satis = True
             for v in vs:
                 if v not in schedule:
@@ -116,15 +116,15 @@ def schedule_append(grules_r, schedule, log=False):
             break
     return schedule
 
-def schedule_append_reflective(grules_r, schedule):
+def schedule_append_reflective(rules_rev_group, schedule):
     '''
     Loop over all the modules. 
     if there is a module with unsatisfied dependencies, but the only
     missing dependency is itself, then add it to the schedule
     '''
-    while not check_complete_schedule(grules_r, schedule):
+    while not check_complete_schedule(rules_rev_group, schedule):
         len_schedule = len(schedule)
-        for k, vs in grules_r.items():
+        for k, vs in rules_rev_group.items():
             miss = []
             for v in vs:
                 if v not in schedule:
@@ -160,8 +160,8 @@ class WMCoreNode():
     Example on how to sort such modules
     ```python
     node_list = []
-    for k in grules_r:
-        node = WMCoreNode(k, grules_r, schedule, args.directory)
+    for k in rules_rev_group:
+        node = WMCoreNode(k, rules_rev_group, schedule, args.directory)
         node_list.append(node)
     node_list = sorted(node_list)
 
@@ -174,11 +174,11 @@ class WMCoreNode():
         self.len = 0
         self.lines = 0
 
-    def init(self, name, grules_r, schedule, wmcore_dir):
+    def init(self, name, rules_rev_group, schedule, wmcore_dir):
         self.name = name
         # graph
-        self._required = self._required_by(grules_r, schedule, name)
-        self._requires = self._requirements(grules_r, schedule, name)
+        self._required = self._required_by(rules_rev_group, schedule, name)
+        self._requires = self._requirements(rules_rev_group, schedule, name)
         self.required_card = len(set(self._required))
         self.requires_card = len(set(self._requires))
         # stats
@@ -188,25 +188,25 @@ class WMCoreNode():
         self.len = self._len()
         self.lines = self._lines()
 
-    def _required_by(self, grules_r, schedule, key):
+    def _required_by(self, rules_rev_group, schedule, key):
         '''
         modules **that are not in schedule yet**
         depend on this (higher, higher prio)
         '''
-        for k,vs in grules_r.items():
+        for k,vs in rules_rev_group.items():
             if key in vs and k not in schedule:
                 yield k
 
-    def _requirements(self, grules_r, schedule, key):
+    def _requirements(self, rules_rev_group, schedule, key):
         '''
         list of modules **that are not in schedule yet**
         that need to be migrated before migrating this.
         len(set(_requirements(...))): (higher, lower prio)
         '''
-        for v in grules_r[key]:
+        for v in rules_rev_group[key]:
             if v not in schedule:
                 yield v
-            self._requirements(grules_r, schedule, v)
+            self._requirements(rules_rev_group, schedule, v)
 
     def __lt__ (self, other):
         if self.required_card > other.required_card: return True
@@ -277,8 +277,8 @@ def revdependency_dict(rules, nodes):
     * dictionary with the reversed dependencies, grouped at the desired level
 
     '''
-    rules_r = {} # reversed dependencies
-    grules_r = {} # grouped reversed dependencies
+    rules_rev = {} # reversed dependencies
+    rules_rev_group = {} # grouped reversed dependencies
     for rule in rules:
         arrow, _ = rule.split("[")
         a, _, b = arrow.split()
@@ -288,34 +288,34 @@ def revdependency_dict(rules, nodes):
             if (separator not in a) or (separator not in b) : 
                 continue 
         # fill reverse dep
-        if a not in rules_r:
-            rules_r[a] = set()
-        if b in rules_r:
-            rules_r[b].add(a)
+        if a not in rules_rev:
+            rules_rev[a] = set()
+        if b in rules_rev:
+            rules_rev[b].add(a)
         else:
-            rules_r[b] = set()
-            rules_r[b].add(a)
+            rules_rev[b] = set()
+            rules_rev[b].add(a)
         # fill grouped reverse dep
         group_a = shorten(a)
         group_b = shorten(b)
-        if group_a not in grules_r:
-            grules_r[group_a] = set()
-        if group_b in grules_r:
-            grules_r[group_b].add(group_a)
+        if group_a not in rules_rev_group:
+            rules_rev_group[group_a] = set()
+        if group_b in rules_rev_group:
+            rules_rev_group[group_b].add(group_a)
         else:
-            grules_r[group_b] = set()
-            grules_r[group_b].add(group_a)
+            rules_rev_group[group_b] = set()
+            rules_rev_group[group_b].add(group_a)
     for node in nodes:
         nodename = node.split("[")[0]
         nodename.strip()
         nodename = parse_pydeps_modulename(nodename)
         group_nodename = shorten(nodename)
-        if group_nodename not in rules_r:
-            rules_r [group_nodename] = set()
-        if group_nodename not in grules_r:
-            grules_r [group_nodename] = set()
+        if group_nodename not in rules_rev:
+            rules_rev [group_nodename] = set()
+        if group_nodename not in rules_rev_group:
+            rules_rev_group [group_nodename] = set()
             logger.debug(group_nodename)
-    return rules_r, grules_r
+    return rules_rev, rules_rev_group
 
 def revdepgraph_write_json(revdep_dict, filename):
     '''
@@ -339,14 +339,14 @@ def revdepgraph_write_dot(revdep_dict, filename, header):
         print('\n', file=f)
         # nodes
         nodes = set()
-        for k, v in grules_r.items():
+        for k, v in rules_rev_group.items():
             nodes.add(k)
             for node in v:
                 nodes.add(node)
         for node in nodes:
             print('    {} [label="{}"]'.format(node, node), file=f)
         # rules
-        for k, v in grules_r.items():
+        for k, v in rules_rev_group.items():
             for node in v:
                 print('    {} -> {}'.format(node, k), file=f)
         print('}', file=f)
@@ -395,20 +395,20 @@ if __name__ == "__main__":
     nodes = [line for line in body if 'label' in line]
     rules = [line for line in body if '->' in line]
     logger.debug(rules)
-    rules_r, grules_r = revdependency_dict(rules, nodes)
-    logger.debug(rules_r)
-    logger.debug(grules_r)
+    rules_rev, rules_rev_group = revdependency_dict(rules, nodes)
+    logger.debug(rules_rev)
+    logger.debug(rules_rev_group)
     revdepgraph_write_json(
-        grules_r,
+        rules_rev_group,
         args.input_dotfile[:-4] + "_group_l" + str(args.level) + ".txt", 
         )
     revdepgraph_write_dot(
-        grules_r,
+        rules_rev_group,
         args.input_dotfile[:-4] + "_group_l" + str(args.level) + ".dot",
         header
-    )
+        )
     depgraph_write_json(
-        grules_r,
+        rules_rev_group,
         args.input_dotfile[:-4] + "_direct_group_l" + str(args.level) + ".txt", 
         )
 
@@ -416,17 +416,17 @@ if __name__ == "__main__":
     # Compute a possible schedule for gradual migration
     # based on the simplified graph
 
-    logger.info("Number of directories/modules: %s" % len(grules_r))
+    logger.info("Number of directories/modules: %s" % len(rules_rev_group))
 
     schedule = []
     # adding the directories with no dependencies
-    for k, vs in grules_r.items():
+    for k, vs in rules_rev_group.items():
         if len(vs) == 0:
             if k not in schedule:
                 schedule.append(k)
     # adding the directories whose dependencies are easily satisfied
-    schedule = schedule_append(grules_r, schedule)
-    schedule = schedule_append_reflective(grules_r, schedule)
+    schedule = schedule_append(rules_rev_group, schedule)
+    schedule = schedule_append_reflective(rules_rev_group, schedule)
 
     # pprint.pprint(schedule)
     logger.info("len schedule: %s" % len(schedule))
@@ -446,23 +446,23 @@ if __name__ == "__main__":
         for k in euristic_schedule:
             if k not in schedule:
                 schedule.append(k) # 33
-    schedule = schedule_append(grules_r, schedule) # len(schedule) 38
-    schedule = schedule_append_reflective(grules_r, schedule) # len(schedule) 63
-    schedule = schedule_append(grules_r, schedule) # len(schedule) 69
-    schedule = schedule_append_reflective(grules_r, schedule) # len(schedule) 82
-    schedule = schedule_append(grules_r, schedule) # len(schedule) 83
+    schedule = schedule_append(rules_rev_group, schedule) # len(schedule) 38
+    schedule = schedule_append_reflective(rules_rev_group, schedule) # len(schedule) 63
+    schedule = schedule_append(rules_rev_group, schedule) # len(schedule) 69
+    schedule = schedule_append_reflective(rules_rev_group, schedule) # len(schedule) 82
+    schedule = schedule_append(rules_rev_group, schedule) # len(schedule) 83
 
     logger.info("len schedule: %s" % len(schedule))
     logger.debug(schedule)
-    logger.debug(set(grules_r.keys()).difference(set(schedule)))
+    logger.debug(set(rules_rev_group.keys()).difference(set(schedule)))
 
     ################################
     # After having a schedule, gather some informations about the modules
     if args.directory:
         node_dict = {}
-        for k in grules_r:
+        for k in rules_rev_group:
             node = WMCoreNode()
-            node.init(k, grules_r, schedule, args.directory)
+            node.init(k, rules_rev_group, schedule, args.directory)
             node_dict[node.name] = node
 
         total_number_files = sum([ len(node) for node in node_dict.values() ])
