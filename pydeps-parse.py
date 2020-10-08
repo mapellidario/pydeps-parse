@@ -36,8 +36,9 @@ parser.add_argument("-d", "--directory", \
 args = parser.parse_args()
 
 masks = ["Utils", "PSetTweaks"]
+separator = "_"
 
-def remove_src_python(node):
+def parse_pydeps_modulename(node):
     node = node.strip() # remove trailing spaces
     if node.startswith("src_python_"):
         node = node[len("src_python_"):] # remove "src_python"
@@ -54,11 +55,12 @@ def shorten(node):
     '''
     for mask in masks:
         if node.startswith(mask + "_"):
-            logging.debug(node)
+            logger.debug(node)
             return mask
     level = args.level
-    levels = [i for i in range(len(node)) if node[i] == "_"] # list of index of "_" char
+    levels = [i for i in range(len(node)) if node[i] == "_"] 
     snode = node[:levels[level-1]] if level <= len(levels) else node
+    
     return snode
 
 def filter(lines):
@@ -75,7 +77,7 @@ def filter(lines):
         keep = True
         for pattern in exclude_patterns:
             if pattern in line: 
-                logging.debug('{} {}'.format(pattern, line))
+                logger.debug('{} {}'.format(pattern, line))
                 keep = False
         if keep:
             lines_filtered.append(line)
@@ -178,7 +180,7 @@ class WMCoreNode():
         self.requires_card = len(set(self._requires))
         # stats
         self._wmcore_dir = os.path.join(wmcore_dir, "src", "python")
-        self._module_dir = os.path.join(self._wmcore_dir, "/".join(name.split("_")))
+        self._module_dir = os.path.join(self._wmcore_dir, "/".join(name.split(separator)))
         self._get_files()
         self.len = self._len()
         self.lines = self._lines()
@@ -216,21 +218,24 @@ class WMCoreNode():
         self._files = []
         if os.path.exists(self._module_dir + ".py"):
             self._files = [self._module_dir + ".py"]
-        elif (self.name in masks) or (self.name.count("_") == args.level - 1):
+        elif (self.name in masks) or (self.name.count(separator) == args.level - 1):
             self._files = [os.path.join(root, name) 
                             for root, _, names in os.walk(self._module_dir) 
                             for name in names 
                             if os.path.isfile(os.path.join(root, name)) 
-                            and name.endswith(".py") 
+                            and name.endswith(".py")
                             and name != "__init__.py" ] # 
-        elif self.name.count("_") < args.level - 1 :
+        elif self.name.count(separator) < args.level - 1 :
             self._files = [os.path.join(root, name) 
                            for root, _, names in os.walk(self._module_dir) 
                            for name in names 
                            if os.path.isfile(os.path.join(root, name)) 
                            and name.endswith(".py") 
                            and name != "__init__.py" 
-                           and name.count("_") >= args.level ] # 
+                           and name.count(separator) >= args.level ] # 
+        for file in self._files:
+            if self.name == "WMCore_REST":
+                logger.debug("{0} {1}".format(self.name, file))
 
 
     def _len(self):
@@ -274,10 +279,10 @@ def dependency_dict(rules, nodes):
     for rule in rules:
         arrow, _ = rule.split("[")
         a, _, b = arrow.split()
-        a, b = remove_src_python(a), remove_src_python(b)
+        a, b = parse_pydeps_modulename(a), parse_pydeps_modulename(b)
         # Exclude directories in root to avoid double counting
         if (a not in masks) and (b not in masks) and args.level > 1: 
-            if ("_" not in a) or ("_" not in b) : 
+            if (separator not in a) or (separator not in b) : 
                 continue 
         # fill reverse dep
         if a not in rules_r:
@@ -300,13 +305,13 @@ def dependency_dict(rules, nodes):
     for node in nodes:
         nodename = node.split("[")[0]
         nodename.strip()
-        nodename = remove_src_python(nodename)
+        nodename = parse_pydeps_modulename(nodename)
         group_nodename = shorten(nodename)
         if group_nodename not in rules_r:
             rules_r [group_nodename] = set()
         if group_nodename not in grules_r:
             grules_r [group_nodename] = set()
-            logging.info(group_nodename)
+            logger.debug(group_nodename)
     return rules_r, grules_r
 
 def depgraph_write_json(revdep_dict, filename):
@@ -344,8 +349,25 @@ def depgraph_write_dot(revdep_dict, filename, header):
         print('}', file=f)
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    # logging.basicConfig(level=logging.INFO)
     # logging.basicConfig(level=logging.DEBUG)
+
+    # create logger
+    logger = logging.getLogger('simple_example')
+    logger.setLevel(logging.DEBUG)
+    # create file handler 
+    fh = logging.FileHandler(filename="log/log.txt", mode="w")
+    fh.setLevel(logging.WARNING)
+    formatter = logging.Formatter('%(message)s')
+    fh.setFormatter(formatter)
+    # create console handler
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(levelname)s:%(message)s')
+    ch.setFormatter(formatter)
+    # add fh to logger
+    logger.addHandler(ch)
+    logger.addHandler(fh)
 
     txt = open(args.input_dotfile).read()
     lines = txt.split("\n")
@@ -357,10 +379,10 @@ if __name__ == "__main__":
     # Get simplified dependency graph
     nodes = [line for line in body if 'label' in line]
     rules = [line for line in body if '->' in line]
-    logging.debug(rules)
+    logger.debug(rules)
     rules_r, grules_r = dependency_dict(rules, nodes)
-    logging.debug(rules_r)
-    logging.debug(grules_r)
+    logger.debug(rules_r)
+    logger.debug(grules_r)
     depgraph_write_json(
         grules_r,
         args.input_dotfile[:-4] + "_group_l" + str(args.level) + ".txt", 
@@ -375,7 +397,7 @@ if __name__ == "__main__":
     # Compute a possible schedule for gradual migration
     # based on the simplified graph
 
-    logging.info("Number of directories/modules: %s" % len(grules_r))
+    logger.info("Number of directories/modules: %s" % len(grules_r))
 
     schedule = []
     # adding the directories with no dependencies
@@ -388,7 +410,7 @@ if __name__ == "__main__":
     schedule = schedule_append_reflective(grules_r, schedule)
 
     # pprint.pprint(schedule)
-    logging.info("len schedule: %s" % len(schedule))
+    logger.info("len schedule: %s" % len(schedule))
 
     # Manually select a few modules that in the dependency diagram 
     # present a lot of outgoing arrows, which means that they are required by
@@ -411,9 +433,9 @@ if __name__ == "__main__":
     schedule = schedule_append_reflective(grules_r, schedule) # len(schedule) 82
     schedule = schedule_append(grules_r, schedule) # len(schedule) 83
 
-    logging.info("len schedule: %s" % len(schedule))
-    logging.debug(schedule)
-    logging.debug(set(grules_r.keys()).difference(set(schedule)))
+    logger.info("len schedule: %s" % len(schedule))
+    logger.debug(schedule)
+    logger.debug(set(grules_r.keys()).difference(set(schedule)))
 
     ################################
     # After having a schedule, gather some informations about the modules
@@ -429,21 +451,21 @@ if __name__ == "__main__":
         current_loc = 0
         for idx, name in enumerate(schedule):
             current_loc += node_dict[name].lines
-            logging.info("| {0: <34} | {1: >4} | {2: >6} | {3: >1.3f} |".format(
+            logger.warning("| {0: <34} | {1: >4} | {2: >6} | {3: >1.3f} |".format(
                 name, 
                 len(node_dict[name]), 
                 node_dict[name].lines,
                 current_loc / total_number_loc
                 ))
     
-        logging.info("Total .py files: %s" % total_number_files )
+        logger.info("Total .py files: %s" % total_number_files )
         ## compare total_number_loc with the following
         ## cd dmwm/WMCore/src/python
         ## find . | grep -v ".pyc" | grep ".py" | grep -v "__init__.py" | xargs -n 1 cat | wc -l
-        logging.info("Total LOC in .py files: %s" % total_number_loc )
+        logger.info("Total LOC in .py files: %s" % total_number_loc )
 
         # test_sum = node_dict["Utils_MemoryCache"] + node_dict["Utils_Utilities"]
-        # logging.info("| {0: <34} | {1: >3} | {2: >5} |".format(
+        # logger.info("| {0: <34} | {1: >3} | {2: >5} |".format(
         #         test_sum.name, 
         #         len(test_sum), 
         #         test_sum.lines,
@@ -452,20 +474,20 @@ if __name__ == "__main__":
         # for mask in masks:
         #     temp_mask = WMCoreNode()
         #     temp_mask.name = mask
-        #     logging.debug(temp_mask)
+        #     logger.debug(temp_mask)
         #     pop_cache = []
         #     for name, node in node_dict.items():
         #         if name.startswith(mask + "_"):
         #             temp_mask += node
-        #             logging.debug(name)
-        #             logging.debug(temp_mask)
+        #             logger.debug(name)
+        #             logger.debug(temp_mask)
         #             pop_cache.append(name)
         #     for name in pop_cache:
         #         node_dict.pop(name)
         #     node_dict[mask] = temp_mask
-        #     logging.debug(temp_mask)
+        #     logger.debug(temp_mask)
         # for node in node_dict.values():
-        #     logging.info("| {0: <34} | {1: >3} | {2: >5} |".format(
+        #     logger.info("| {0: <34} | {1: >3} | {2: >5} |".format(
         #         node.name, 
         #         len(node), 
         #         node.lines,
