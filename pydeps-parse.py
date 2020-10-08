@@ -39,6 +39,10 @@ masks = ["Utils", "PSetTweaks"]
 separator = "_"
 
 def parse_pydeps_modulename(node):
+    '''
+    any manipulation to the node name should be done here, such as changing
+    the separator form "_" to something else
+    '''
     node = node.strip() # remove trailing spaces
     if node.startswith("src_python_"):
         node = node[len("src_python_"):] # remove "src_python"
@@ -54,13 +58,12 @@ def shorten(node):
     no matter what `args.level` is
     '''
     for mask in masks:
-        if node.startswith(mask + "_"):
+        if node.startswith(mask + separator):
             logger.debug(node)
             return mask
     level = args.level
-    levels = [i for i in range(len(node)) if node[i] == "_"] 
+    levels = [i for i in range(len(node)) if node[i] == separator] 
     snode = node[:levels[level-1]] if level <= len(levels) else node
-    
     return snode
 
 def filter(lines):
