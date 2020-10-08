@@ -270,7 +270,7 @@ class WMCoreNode():
     def __repr__(self):
         return "{0} {1} {2}".format( self.name, self.len, self.lines)
 
-def dependency_dict(rules, nodes):
+def revdependency_dict(rules, nodes):
     '''
     Build 
     * dictionary with the reversed dependencies, i.e. key depends on val (`key.py` has line `import val`)
@@ -317,7 +317,7 @@ def dependency_dict(rules, nodes):
             logger.debug(group_nodename)
     return rules_r, grules_r
 
-def depgraph_write_json(revdep_dict, filename):
+def revdepgraph_write_json(revdep_dict, filename):
     '''
     write to file the reversed dependency dictionary in json format.
     
@@ -330,7 +330,7 @@ def depgraph_write_json(revdep_dict, filename):
         # json.dumps(revdep_dict, f, default=set_default)
         pprint.pprint(revdep_dict, f)
 
-def depgraph_write_dot(revdep_dict, filename, header):
+def revdepgraph_write_dot(revdep_dict, filename, header):
     '''
     Write simplified reversed dependency graph to dot file
     '''
@@ -350,6 +350,18 @@ def depgraph_write_dot(revdep_dict, filename, header):
             for node in v:
                 print('    {} -> {}'.format(node, k), file=f)
         print('}', file=f)
+
+def depgraph_write_json(revdep_dict, filename):
+    dep_dict = {}
+    for k1 in revdep_dict:
+        for k2, v in revdep_dict.items():
+            if k1 in v:
+                if k1 in dep_dict:
+                    dep_dict[k1].append(k2)
+                else:
+                    dep_dict[k1] = [k2]
+    with open(filename, "w+") as f:
+        pprint.pprint(dep_dict, f)
 
 if __name__ == "__main__":
     # logging.basicConfig(level=logging.INFO)
@@ -383,18 +395,22 @@ if __name__ == "__main__":
     nodes = [line for line in body if 'label' in line]
     rules = [line for line in body if '->' in line]
     logger.debug(rules)
-    rules_r, grules_r = dependency_dict(rules, nodes)
+    rules_r, grules_r = revdependency_dict(rules, nodes)
     logger.debug(rules_r)
     logger.debug(grules_r)
-    depgraph_write_json(
+    revdepgraph_write_json(
         grules_r,
         args.input_dotfile[:-4] + "_group_l" + str(args.level) + ".txt", 
         )
-    depgraph_write_dot(
+    revdepgraph_write_dot(
         grules_r,
         args.input_dotfile[:-4] + "_group_l" + str(args.level) + ".dot",
         header
     )
+    depgraph_write_json(
+        grules_r,
+        args.input_dotfile[:-4] + "_direct_group_l" + str(args.level) + ".txt", 
+        )
 
     ################################
     # Compute a possible schedule for gradual migration
