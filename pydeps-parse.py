@@ -5,6 +5,10 @@ python3 pydeps-parse.py \
     -l 2 \
     -d /path/to/dmwm/WMCore
 
+improve: 
+* se docker3.8 (to quicly have estimation of missing )
+* parallelize
+
 '''
 
 import pprint
@@ -35,7 +39,7 @@ parser.add_argument("-d", "--directory", \
     type=str,
     required=False)
 parser.add_argument("-n","--n", \
-  help="cyclic group size", \
+  help="backtrack: stop when hitting this cyclic group size. bruteforce: test only this groupsize", \
   type=int, \
   required=False, \
   default=10
@@ -143,6 +147,82 @@ def schedule_append_reflective(rules_rev_group, schedule):
         if len_schedule == len(schedule):
             break
     return schedule
+
+def scheduleaddition_isvalid(schedule_addition, schedule_try, rules_rev_group):
+    '''
+    check only a new portion of the schedule: 
+    faster, but requires trust in the schedule so far
+    '''
+    for k in schedule_addition:
+        for v in rules_rev_group[k]:
+            if v not in schedule_try:
+                return False
+    return True
+
+def schedule_isvalid(schedule, rules_rev, cyclic_interval):
+    '''
+    check if the schedule is valid. used only at the end of the program.
+    We assume that there is only one cycle in the middle.
+    when in the cycle, we have to check if all the depencies are inside
+    the cycle as well, we have to increase idx to the last value of the interval!
+    '''
+    for idx, node in enumerate(schedule):
+        if cyclic_interval[0] <= idx <= cyclic_interval[1]:
+            idx = cyclic_interval[1]
+        for v in rules_rev[node]:
+            if v not in schedule[:idx+1]: # +!1 for reflective dependency
+                logger.info(idx)
+                logger.info(v)
+                return False
+    return True
+
+def cyclic_bruteforce(rules_rev_group, schedule, euristic_schedule):
+    left_nodes = (set(rules_rev_group.keys())).difference(set(schedule))
+    logger.info("  left nodes: %s" % len(left_nodes))
+    n = args.n if args.n < len(left_nodes) else left_nodes
+    kcombs = itertools.combinations( left_nodes , n)
+    logger.info("  n %s" % n)
+    i=0
+    for kcomb in kcombs:
+        if i % 10000 == 0:
+            print("n: ", i, end="\r")
+        kcomb_heuristic = set(kcomb) | set(euristic_schedule) # set.union
+        schedule_try = schedule + list(kcomb_heuristic)
+        if scheduleaddition_isvalid(kcomb_heuristic, schedule_try, rules_rev_group): 
+            logger.info(kcomb_heuristic)
+            schedule = schedule_try
+            break
+        i += 1
+    return schedule
+
+def cyclic_backtrack(rules_rev_group, schedule, euristic_schedule):
+    left_nodes = (set(rules_rev_group.keys())).difference(set(schedule))
+    schedule_addition = left_nodes | euristic_schedule
+    minlen = len(schedule_addition)
+    minlen, schedule_cycle = cyclic_backtrack_helper(rules_rev_group, schedule, schedule_addition, minlen)
+    return schedule_cycle
+
+def cyclic_backtrack_helper(rules_rev_group, schedule, schedule_addition, minlen):
+    schedul_temp = schedule_addition.copy()
+    result = set()
+    for node in schedul_temp:
+        schedule_addition.discard(node)
+        schedule_try = set(schedule) | set(schedule_addition)
+        valid = scheduleaddition_isvalid(schedule_addition, schedule_try, rules_rev_group)
+        # logger.info(valid)
+        if valid:
+            if len(schedule_addition) < minlen: 
+                minlen = len(schedule_addition)
+                logger.debug("DAJJE %s" % minlen)
+                logger.debug(schedule_addition)
+            if len(schedule_addition) == args.n:
+                result = schedule_addition.copy()
+                return len(schedule_addition), result
+            minlen, _result = cyclic_backtrack_helper(rules_rev_group, schedule, schedule_addition, minlen)
+            if len(_result) > 0:
+                return len(_result), _result
+        schedule_addition.add(node)
+    return minlen, result
 
 # def set_default(obj):
 #     if isinstance(obj, set):
@@ -396,7 +476,7 @@ if __name__ == "__main__":
 
     logger_pandas = logging.getLogger('logger_pandas')
     logger_pandas.setLevel(logging.DEBUG)
-    logfilename_pandas = "log/log_l{0}_n{1}_{2}_pandas.txt".format(
+    logfilename_pandas = "log/pandas_{2}_l{0}_n{1}.txt".format(
         args.level, args.n, datetime.datetime.utcnow().strftime("%s") )
     fh_pandas = logging.FileHandler(filename=logfilename_pandas, mode="w")
     fh_pandas.setLevel(logging.INFO)
@@ -419,7 +499,7 @@ if __name__ == "__main__":
     logger.debug(rules_rev)
     logger.debug(rules_rev_group)
     logger.info("meta: nodes %s" % len(rules_rev_group))
-    logger.info("mets: rules %s" % len([rule for rules in rules_rev_group.values() for rule in rules]))
+    logger.info("meta: rules %s" % len([rule for rules in rules_rev_group.values() for rule in rules]))
     revdepgraph_write_json(
         rules_rev_group,
         args.input_dotfile[:-4] + "_group_l" + str(args.level) + ".txt", 
@@ -450,14 +530,13 @@ if __name__ == "__main__":
 
     # pprint.pprint(schedule)
     idx_endgradual = len(schedule)
-    logger.info("len schedule: %s" % len(schedule))
+    logger.info("len schedule (gradual): %s" % len(schedule))
 
     # Manually select a few modules that in the dependency diagram 
     # present a lot of outgoing arrows, which means that they are required by
     # many other modules.
     # these are intended to be migrated all at once at the same time!
-
-    euristic_schedule = []
+    euristic_schedule = set()
     if args.level == 2:
         euristic_schedule = set((
             "WMCore_Database",
@@ -471,43 +550,35 @@ if __name__ == "__main__":
         #     if k not in schedule:
         #         schedule.append(k) # 33
 
-    # cyclic dependencies - now we try to brute-force the result
-    # this can and should be improved
-    left_nodes = (set(rules_rev_group.keys())).difference(set(schedule))
-    logger.info("  left nodes: %s" % len(left_nodes))
+    ##cyclic dependencies - now we try to brute-force the result
+    ## FIXME this can and should be improved
+    ## Example: l==2, 68 nodes, schedule long 54. 
+    ## all combinations of 30 in group of 54: 1402659561581460 \simeq 1e15
+    ## able to test 1e4 combinations per second -> 1e9 seconds -> 30y
+    ## avoid at all costs!
+    # schedule = cyclic_bruteforce(rules_rev_group, schedule, euristic_schedule)
 
-    ## FIXME only one length at a time!
-    # for n in range(len(left_nodes)-10, len(left_nodes)):
-    kcombs = itertools.combinations( left_nodes , args.n)
-    logger.info("  n %s" % args.n)
-    # logger.info("%s", len(list(kcombs)))
-    for kcomb in kcombs:
-        kcomb_heuristic = set(kcomb) | set(euristic_schedule) # set.union
-        # schedule_try = set(schedule) | set(kcomb_heuristic) # set.union
-        schedule_try = schedule + list(kcomb_heuristic)
-        satis = True
-        for k in kcomb:
-            for v in rules_rev_group[k]:
-                if v not in schedule_try:
-                    satis = False
-        if satis: 
-            logger.info(kcomb_heuristic)
-            schedule = schedule_try
-            break
+    # cyclic dependencies: backtracking
+    schedule += cyclic_backtrack(rules_rev_group, schedule, euristic_schedule)
 
     idx_restartgradual = len(schedule)
-    logger.info("len schedule %s" % len(schedule))
+    logger.info("len schedule (backtrack): %s" % len(schedule))
 
-    schedule = schedule_append(rules_rev_group, schedule) # len(schedule) 38
-    schedule = schedule_append_reflective(rules_rev_group, schedule) # len(schedule) 63
-    schedule = schedule_append(rules_rev_group, schedule) # len(schedule) 69
-    schedule = schedule_append_reflective(rules_rev_group, schedule) # len(schedule) 82
-    schedule = schedule_append(rules_rev_group, schedule) # len(schedule) 83
+    schedule = schedule_append(rules_rev_group, schedule)
+    schedule = schedule_append_reflective(rules_rev_group, schedule)
+    schedule = schedule_append(rules_rev_group, schedule)
+    schedule = schedule_append_reflective(rules_rev_group, schedule)
+    schedule = schedule_append(rules_rev_group, schedule)
 
-    logger.info("len schedule: %s" % len(schedule))
+    logger.info("len schedule (gradual2): %s" % len(schedule))
     logger.debug(schedule)
     missing = set(rules_rev_group.keys()).difference(set(schedule))
-    logger.info(missing)
+    logger.debug(" missing %s" % missing)
+
+    logger.info("VALID? %s" % 
+        schedule_isvalid(schedule, rules_rev_group, 
+        (idx_endgradual, idx_restartgradual))
+     )
 
     # # FIXME - JUST TO HAVE NICE PLOTS IN THE PRESENTATION!
     # for name in missing:
@@ -527,7 +598,7 @@ if __name__ == "__main__":
         current_loc = 0
         for idx, name in enumerate(schedule):
             current_loc += node_dict[name].lines
-            logger.info("| {0: <34} | {1: >4} | {2: >6} | {3: >1.3f} | {4:} |".format(
+            logger.debug("| {0: <34} | {1: >4} | {2: >6} | {3: >1.3f} | {4:} |".format(
                 name, 
                 len(node_dict[name]), 
                 node_dict[name].lines,
