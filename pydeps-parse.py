@@ -13,6 +13,7 @@ import itertools
 import copy
 import json
 import os
+import datetime
 
 from functools import total_ordering
 
@@ -33,6 +34,13 @@ parser.add_argument("-d", "--directory", \
     help="dmwm/WMCore directory, relative or absolute path",
     type=str,
     required=False)
+parser.add_argument("-n","--n", \
+  help="cyclic group size", \
+  type=int, \
+  required=False, \
+  default=10
+  )
+
 args = parser.parse_args()
 
 masks = ["Utils", "PSetTweaks"]
@@ -371,8 +379,10 @@ if __name__ == "__main__":
     logger = logging.getLogger('simple_example')
     logger.setLevel(logging.DEBUG)
     # create file handler 
-    fh = logging.FileHandler(filename="log/log.txt", mode="w")
-    fh.setLevel(logging.WARNING)
+    logfilename = "log/log_l{0}_n{1}_{2}.txt".format(
+        args.level, args.n, datetime.datetime.utcnow().strftime("%s") )
+    fh = logging.FileHandler(filename=logfilename, mode="w")
+    fh.setLevel(logging.INFO)
     formatter = logging.Formatter('%(message)s')
     fh.setFormatter(formatter)
     # create console handler
@@ -383,6 +393,16 @@ if __name__ == "__main__":
     # add fh to logger
     logger.addHandler(ch)
     logger.addHandler(fh)
+
+    logger_pandas = logging.getLogger('logger_pandas')
+    logger_pandas.setLevel(logging.DEBUG)
+    logfilename_pandas = "log/log_l{0}_n{1}_{2}_pandas.txt".format(
+        args.level, args.n, datetime.datetime.utcnow().strftime("%s") )
+    fh_pandas = logging.FileHandler(filename=logfilename_pandas, mode="w")
+    fh_pandas.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(message)s')
+    fh_pandas.setFormatter(formatter)
+    logger_pandas.addHandler(fh_pandas)
 
     txt = open(args.input_dotfile).read()
     lines = txt.split("\n")
@@ -398,6 +418,8 @@ if __name__ == "__main__":
     rules_rev, rules_rev_group = revdependency_dict(rules, nodes)
     logger.debug(rules_rev)
     logger.debug(rules_rev_group)
+    logger.info("meta: nodes %s" % len(rules_rev_group))
+    logger.info("mets: rules %s" % len([rule for rules in rules_rev_group.values() for rule in rules]))
     revdepgraph_write_json(
         rules_rev_group,
         args.input_dotfile[:-4] + "_group_l" + str(args.level) + ".txt", 
@@ -416,8 +438,6 @@ if __name__ == "__main__":
     # Compute a possible schedule for gradual migration
     # based on the simplified graph
 
-    logger.info("Number of directories/modules: %s" % len(rules_rev_group))
-
     schedule = []
     # adding the directories with no dependencies
     for k, vs in rules_rev_group.items():
@@ -429,6 +449,7 @@ if __name__ == "__main__":
     schedule = schedule_append_reflective(rules_rev_group, schedule)
 
     # pprint.pprint(schedule)
+    idx_endgradual = len(schedule)
     logger.info("len schedule: %s" % len(schedule))
 
     # Manually select a few modules that in the dependency diagram 
@@ -436,16 +457,47 @@ if __name__ == "__main__":
     # many other modules.
     # these are intended to be migrated all at once at the same time!
 
+    euristic_schedule = []
     if args.level == 2:
-        euristic_schedule = [
+        euristic_schedule = set((
             "WMCore_Database",
             "WMCore_Services",
             "WMCore_WorkerThreads",
             "WMCore_WMSpec",
-        ]
-        for k in euristic_schedule:
-            if k not in schedule:
-                schedule.append(k) # 33
+            ))
+        ## Do not add the euristics brutally, 
+        ## use them to add cyclic dependencies!
+        # for k in euristic_schedule:
+        #     if k not in schedule:
+        #         schedule.append(k) # 33
+
+    # cyclic dependencies - now we try to brute-force the result
+    # this can and should be improved
+    left_nodes = (set(rules_rev_group.keys())).difference(set(schedule))
+    logger.info("  left nodes: %s" % len(left_nodes))
+
+    ## FIXME only one length at a time!
+    # for n in range(len(left_nodes)-10, len(left_nodes)):
+    kcombs = itertools.combinations( left_nodes , args.n)
+    logger.info("  n %s" % args.n)
+    # logger.info("%s", len(list(kcombs)))
+    for kcomb in kcombs:
+        kcomb_heuristic = set(kcomb) | set(euristic_schedule) # set.union
+        # schedule_try = set(schedule) | set(kcomb_heuristic) # set.union
+        schedule_try = schedule + list(kcomb_heuristic)
+        satis = True
+        for k in kcomb:
+            for v in rules_rev_group[k]:
+                if v not in schedule_try:
+                    satis = False
+        if satis: 
+            logger.info(kcomb_heuristic)
+            schedule = schedule_try
+            break
+
+    idx_restartgradual = len(schedule)
+    logger.info("len schedule %s" % len(schedule))
+
     schedule = schedule_append(rules_rev_group, schedule) # len(schedule) 38
     schedule = schedule_append_reflective(rules_rev_group, schedule) # len(schedule) 63
     schedule = schedule_append(rules_rev_group, schedule) # len(schedule) 69
@@ -454,7 +506,12 @@ if __name__ == "__main__":
 
     logger.info("len schedule: %s" % len(schedule))
     logger.debug(schedule)
-    logger.debug(set(rules_rev_group.keys()).difference(set(schedule)))
+    missing = set(rules_rev_group.keys()).difference(set(schedule))
+    logger.info(missing)
+
+    # # FIXME - JUST TO HAVE NICE PLOTS IN THE PRESENTATION!
+    # for name in missing:
+    #     schedule.append(name)
 
     ################################
     # After having a schedule, gather some informations about the modules
@@ -470,44 +527,23 @@ if __name__ == "__main__":
         current_loc = 0
         for idx, name in enumerate(schedule):
             current_loc += node_dict[name].lines
-            logger.warning("| {0: <34} | {1: >4} | {2: >6} | {3: >1.3f} |".format(
+            logger.info("| {0: <34} | {1: >4} | {2: >6} | {3: >1.3f} | {4:} |".format(
                 name, 
                 len(node_dict[name]), 
                 node_dict[name].lines,
-                current_loc / total_number_loc
+                current_loc / total_number_loc,
+                0 if idx_endgradual < idx < idx_restartgradual else 1
                 ))
-    
+            logger_pandas.warning("{0},{1},{2},{3},{4}".format(
+                name, 
+                len(node_dict[name]), 
+                node_dict[name].lines,
+                current_loc / total_number_loc,
+                0 if idx_endgradual < idx < idx_restartgradual else 1
+                ))
+
         logger.info("Total .py files: %s" % total_number_files )
         ## compare total_number_loc with the following
         ## cd dmwm/WMCore/src/python
         ## find . | grep -v ".pyc" | grep ".py" | grep -v "__init__.py" | xargs -n 1 cat | wc -l
         logger.info("Total LOC in .py files: %s" % total_number_loc )
-
-        # test_sum = node_dict["Utils_MemoryCache"] + node_dict["Utils_Utilities"]
-        # logger.info("| {0: <34} | {1: >3} | {2: >5} |".format(
-        #         test_sum.name, 
-        #         len(test_sum), 
-        #         test_sum.lines,
-        #         ))
-        # masks = ["Utils"]
-        # for mask in masks:
-        #     temp_mask = WMCoreNode()
-        #     temp_mask.name = mask
-        #     logger.debug(temp_mask)
-        #     pop_cache = []
-        #     for name, node in node_dict.items():
-        #         if name.startswith(mask + "_"):
-        #             temp_mask += node
-        #             logger.debug(name)
-        #             logger.debug(temp_mask)
-        #             pop_cache.append(name)
-        #     for name in pop_cache:
-        #         node_dict.pop(name)
-        #     node_dict[mask] = temp_mask
-        #     logger.debug(temp_mask)
-        # for node in node_dict.values():
-        #     logger.info("| {0: <34} | {1: >3} | {2: >5} |".format(
-        #         node.name, 
-        #         len(node), 
-        #         node.lines,
-        #         ))
