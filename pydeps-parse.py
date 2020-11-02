@@ -597,21 +597,23 @@ if __name__ == "__main__":
         total_number_loc = sum([ node.lines for node in node_dict.values() ])
         current_loc = 0
         for idx, name in enumerate(schedule):
-            current_loc += node_dict[name].lines
-            logger.debug("| {0: <34} | {1: >4} | {2: >6} | {3: >1.3f} | {4:} |".format(
-                name, 
-                len(node_dict[name]), 
-                node_dict[name].lines,
-                current_loc / total_number_loc,
-                0 if idx_endgradual < idx < idx_restartgradual else 1
-                ))
-            logger_pandas.warning("{0},{1},{2},{3},{4}".format(
-                name, 
-                len(node_dict[name]), 
-                node_dict[name].lines,
-                current_loc / total_number_loc,
-                0 if idx_endgradual < idx < idx_restartgradual else 1
-                ))
+            if len(node_dict[name]) > 0:
+                current_loc += node_dict[name].lines
+                logger.debug("| {0: <34} | {1: >4} | {2: >6} | {3: >1.3f} | {4:} | {5} |".format(
+                    name, 
+                    len(node_dict[name]), 
+                    node_dict[name].lines,
+                    current_loc / total_number_loc,
+                    0 if idx_endgradual < idx < idx_restartgradual else 1,
+                    rules_rev_group[name]
+                    ))
+                logger_pandas.warning("{0},{1},{2},{3},{4}".format(
+                    name, 
+                    len(node_dict[name]), 
+                    node_dict[name].lines,
+                    current_loc / total_number_loc,
+                    0 if idx_endgradual < idx < idx_restartgradual else 1
+                    ))
 
         logger.info("Total .py files: %s" % total_number_files )
         ## compare total_number_loc with the following
