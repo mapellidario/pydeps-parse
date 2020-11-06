@@ -18,6 +18,7 @@ import copy
 import json
 import os
 import datetime
+import subprocess
 
 from functools import total_ordering
 
@@ -44,8 +45,46 @@ parser.add_argument("-n","--n", \
   required=False, \
   default=10
   )
+future_parser = parser.add_mutually_exclusive_group(required=False)
+future_parser.add_argument('--future', dest='future', action='store_true')
+future_parser.add_argument('--no-future', dest='future', action='store_false')
+parser.set_defaults(feature=False)
+parser.add_argument("-v","--v", \
+  help="futurize: docker volume bind", \
+  type=str, \
+  required=False, \
+  default="/path/to/github.com/WMCore:/src"
+  )
 
 args = parser.parse_args()
+
+## create logger
+logger = logging.getLogger('simple_example')
+logger.setLevel(logging.DEBUG)
+# create console handler
+ch = logging.StreamHandler()
+ch.setLevel(logging.INFO)
+formatter = logging.Formatter('%(levelname)s:%(message)s')
+ch.setFormatter(formatter)
+logger.addHandler(ch)
+# create file handler 
+logfilename = "log/log_l{0}_n{1}_{2}.txt".format(
+    args.level, args.n, datetime.datetime.utcnow().strftime("%s") )
+fh = logging.FileHandler(filename=logfilename, mode="w")
+fh.setLevel(logging.INFO)
+formatter = logging.Formatter('%(message)s')
+fh.setFormatter(formatter)
+logger.addHandler(fh)
+
+# logger_pandas = logging.getLogger('logger_pandas')
+# logger_pandas.setLevel(logging.DEBUG)
+# logfilename_pandas = "log/pandas_{2}_l{0}_n{1}.txt".format(
+#     args.level, args.n, datetime.datetime.utcnow().strftime("%s") )
+# fh_pandas = logging.FileHandler(filename=logfilename_pandas, mode="w")
+# fh_pandas.setLevel(logging.INFO)
+# formatter = logging.Formatter('%(message)s')
+# fh_pandas.setFormatter(formatter)
+# logger_pandas.addHandler(fh_pandas)
 
 masks = ["Utils", "PSetTweaks"]
 separator = "_"
@@ -358,6 +397,29 @@ class WMCoreNode():
     def __repr__(self):
         return "{0} {1} {2}".format( self.name, self.len, self.lines)
 
+    def _futurize_changes(self):
+        self._adds = 0
+        self._dels = 0
+        for file in self._files:
+            dockerfile = file.replace(self._wmcore_dir, "/src/src/python")
+            cmd=[
+                "docker",
+                "run",
+                "-it",
+                "-v", 
+                args.v,
+                "python-docker_python-user-future",
+                "futurize",
+                dockerfile
+            ]
+            r = subprocess.run(cmd, capture_output=True)
+            logger.debug(r.args)
+            stdout = r.stdout.decode("utf-8")
+            stdout = stdout.split("\n")
+            self._adds += len([line for line in stdout if line.startswith("+") and not line.startswith("+++")])
+            self._dels += len([line for line in stdout if line.startswith("-") and not line.startswith("---")])
+        logger.debug(self._adds, self._dels)
+
 def revdependency_dict(rules, nodes):
     '''
     Build 
@@ -427,14 +489,14 @@ def revdepgraph_write_dot(revdep_dict, filename, header):
         print('\n', file=f)
         # nodes
         nodes = set()
-        for k, v in rules_rev_group.items():
+        for k, v in revdep_dict.items():
             nodes.add(k)
             for node in v:
                 nodes.add(node)
         for node in nodes:
             print('    {} [label="{}"]'.format(node, node), file=f)
         # rules
-        for k, v in rules_rev_group.items():
+        for k, v in revdep_dict.items():
             for node in v:
                 print('    {} -> {}'.format(node, k), file=f)
         print('}', file=f)
@@ -451,39 +513,7 @@ def depgraph_write_json(revdep_dict, filename):
     with open(filename, "w+") as f:
         pprint.pprint(dep_dict, f)
 
-if __name__ == "__main__":
-    # logging.basicConfig(level=logging.INFO)
-    # logging.basicConfig(level=logging.DEBUG)
-
-    # create logger
-    logger = logging.getLogger('simple_example')
-    logger.setLevel(logging.DEBUG)
-    # create file handler 
-    logfilename = "log/log_l{0}_n{1}_{2}.txt".format(
-        args.level, args.n, datetime.datetime.utcnow().strftime("%s") )
-    fh = logging.FileHandler(filename=logfilename, mode="w")
-    fh.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(message)s')
-    fh.setFormatter(formatter)
-    # create console handler
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(levelname)s:%(message)s')
-    ch.setFormatter(formatter)
-    # add fh to logger
-    logger.addHandler(ch)
-    logger.addHandler(fh)
-
-    logger_pandas = logging.getLogger('logger_pandas')
-    logger_pandas.setLevel(logging.DEBUG)
-    logfilename_pandas = "log/pandas_{2}_l{0}_n{1}.txt".format(
-        args.level, args.n, datetime.datetime.utcnow().strftime("%s") )
-    fh_pandas = logging.FileHandler(filename=logfilename_pandas, mode="w")
-    fh_pandas.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(message)s')
-    fh_pandas.setFormatter(formatter)
-    logger_pandas.addHandler(fh_pandas)
-
+def main():
     txt = open(args.input_dotfile).read()
     lines = txt.split("\n")
     header = lines[:6]
@@ -599,24 +629,43 @@ if __name__ == "__main__":
         for idx, name in enumerate(schedule):
             if len(node_dict[name]) > 0:
                 current_loc += node_dict[name].lines
-                logger.debug("| {0: <34} | {1: >4} | {2: >6} | {3: >1.3f} | {4:} | {5} |".format(
+                logger.debug("| {0: <34} | {1: >4} | {2: >6} | {3: >1.3f} | {4:} | {5} | {6} |".format(
                     name, 
                     len(node_dict[name]), 
                     node_dict[name].lines,
                     current_loc / total_number_loc,
                     0 if idx_endgradual < idx < idx_restartgradual else 1,
-                    rules_rev_group[name]
+                    rules_rev_group[name],
+                    node_dict[name]._files
                     ))
-                logger_pandas.warning("{0},{1},{2},{3},{4}".format(
-                    name, 
-                    len(node_dict[name]), 
-                    node_dict[name].lines,
-                    current_loc / total_number_loc,
-                    0 if idx_endgradual < idx < idx_restartgradual else 1
-                    ))
+                if args.future:
+                    if not os.path.exists(args.v.split(":")[0]):
+                        logger.warning("docker bind: non existing path!")
+                        return
+                    node_dict[name]._futurize_changes(),
+                    logger.info("| {0} | {1} | {2} | {3}, {4} | {5} | {6} | {7} | {8} | ".format(
+                        name, 
+                        len(node_dict[name]), 
+                        node_dict[name].lines,
+                        node_dict[name]._adds, node_dict[name]._dels,
+                        current_loc / total_number_loc,
+                        0 if idx_endgradual < idx < idx_restartgradual else 1,
+                        rules_rev_group[name],
+                        node_dict[name]._files
+                        ))
+                # logger_pandas.warning("{0},{1},{2},{3},{4}".format(
+                #     name, 
+                #     len(node_dict[name]), 
+                #     node_dict[name].lines,
+                #     current_loc / total_number_loc,
+                #     0 if idx_endgradual < idx < idx_restartgradual else 1
+                #     ))
 
         logger.info("Total .py files: %s" % total_number_files )
         ## compare total_number_loc with the following
         ## cd dmwm/WMCore/src/python
         ## find . | grep -v ".pyc" | grep ".py" | grep -v "__init__.py" | xargs -n 1 cat | wc -l
         logger.info("Total LOC in .py files: %s" % total_number_loc )
+
+if __name__ == "__main__":
+    main()
